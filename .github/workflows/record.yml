@@ -1,0 +1,73 @@
+# Daily recorders: expected move (15:30 Mountain), market context, economic calendar (04:45 Mountain).
+# Started on time by cron-job.org ("run workflow"); the schedules below are only free backups.
+# The collected data is NOT stored here: it is pushed to the owner's private repository with the DATA_TOKEN secret.
+# Security: no pull-request triggers; secrets are only given to runs started by the owner; read-only token here.
+name: Record
+
+on:
+  schedule:
+    - cron: "27,37,47,57 21 * * 1-5"  # expected move backups, 15:27-15:57 MDT
+    - cron: "27,37,47,57 22 * * 1-5"  # expected move backups, 15:27-15:57 MST
+    - cron: "13 0 * * 2-6"            # last expected-move backup
+    - cron: "41 10,11 * * 0-5"        # economic calendar backup, 04:41 Mountain
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "normal = expected move (records once per day from 15:25 MT); test; force; history; context; context-test; calendar; calendar-test"
+        default: test
+        type: choice
+        options: [test, force, normal, history, context, context-test, calendar, calendar-test]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: market-data
+  cancel-in-progress: false
+
+jobs:
+  record:
+    if: github.repository_owner == 'GoldCoastCodig'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2, pinned
+        with:
+          persist-credentials: false
+      - name: Get the data branch (private repository)
+        env:
+          DATA_TOKEN: ${{ secrets.DATA_TOKEN }}
+        run: |
+          git clone --quiet --depth 1 --branch market-data \
+            "https://x-access-token:${DATA_TOKEN}@github.com/GoldCoastCodig/Trading-Research.git" data
+      - name: Record
+        env:
+          TT_CLIENT_ID: ${{ secrets.TT_CLIENT_ID }}
+          TT_CLIENT_SECRET: ${{ secrets.TT_CLIENT_SECRET }}
+          TT_REFRESH_TOKEN: ${{ secrets.TT_REFRESH_TOKEN }}
+          SCHWAB_APP_KEY: ${{ secrets.SCHWAB_APP_KEY }}
+          SCHWAB_APP_SECRET: ${{ secrets.SCHWAB_APP_SECRET }}
+          SCHWAB_REFRESH_TOKEN: ${{ secrets.SCHWAB_REFRESH_TOKEN }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          MODE="${{ github.event.inputs.mode || 'normal' }}"
+          [ "${{ github.event.schedule }}" = "41 10,11 * * 0-5" ] && MODE="calendar"
+          if [ "$MODE" = "calendar" ]; then python3 recorder/econ_calendar.py --out data --notify; exit 0; fi
+          if [ "$MODE" = "calendar-test" ]; then python3 recorder/econ_calendar.py --out data --test; exit 0; fi
+          FLAG=""
+          [ "$MODE" = "test" ] && FLAG="--test"
+          [ "$MODE" = "force" ] && FLAG="--force"
+          [ "$MODE" = "history" ] && FLAG="--history"
+          [ "$MODE" = "context" ] && FLAG="--context"
+          [ "$MODE" = "context-test" ] && FLAG="--context --test"
+          python3 recorder/em_recorder.py --out data $FLAG
+      - name: Save to the private data branch
+        run: |
+          cd data
+          git config user.name "recorder"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then echo "Nothing new."; exit 0; fi
+          git commit -q -m "Record $(TZ=America/Denver date +%F) (${{ github.event.inputs.mode || 'scheduled' }}, public runner)"
+          for i in 1 2 3; do git push -q origin HEAD:market-data && exit 0; sleep 5; git pull -q --rebase origin market-data; done
+          exit 1
