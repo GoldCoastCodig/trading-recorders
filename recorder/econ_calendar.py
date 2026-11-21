@@ -230,7 +230,7 @@ def paste_line(events, day):
 
 def calendar_md(events, today, notes, test=False):
     mark_shown(events)
-    ws = week_start(today)
+    ws = week_start(today) if today.weekday() < 5 else today + timedelta(days=7 - today.weekday())  # weekends look ahead
     lines = ["# %sUS economic calendar (Mountain time)" % ("TEST — " if test else ""), "",
              "Updated %s MT. ●●● = high importance (alerts 30 and 5 min before); ●●○ medium, shown only in the "
              "pre-open window; everything else is kept in `calendar/events_YYYY.csv`. ⏰ = in the pre-open window "
