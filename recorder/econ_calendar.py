@@ -50,7 +50,15 @@ def num_text(v):
     return str(v)
 
 
+# Raised to high: shown as high by the user's old calendar widget, or always market-moving (FOMC, Fed chair).
+BOOST = re.compile(r"^Initial Jobless Claims$|^ADP Employment Change$|S&P Global Composite PMI|"
+                   r"Fed Interest Rate Decision|FOMC|Fed Chair", re.I)
+SUBROW = re.compile(r"allotted|bid-to-cover|total accepted|high yield|tail", re.I)
+
+
 def event(time_utc, title, importance, source, actual="", forecast="", previous="", unit="", category=""):
+    if BOOST.search(title.strip()):
+        importance = 3
     t = time_utc.astimezone(MT)
     iso = time_utc.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     return {"key": "%s|%s" % (iso, re.sub(r"\s+", " ", title.strip().lower())), "time_utc": iso,
@@ -117,8 +125,8 @@ TERM = re.compile(r"(\d+)[- ]?(?:year|yr|y)\b", re.I)
 
 def auction_term(e):
     """'10-Year Note Auction' / '10-y Bond Auction' -> '10'; '' when not a coupon auction."""
-    if "auction" not in e["title"].lower():
-        return ""
+    if "auction" not in e["title"].lower() or SUBROW.search(e["title"]):
+        return ""                  # not an auction, or a detail row (bid-to-cover etc.) of one
     m = TERM.search(e["title"])
     return m.group(1) if m else ""
 
@@ -133,7 +141,7 @@ def alert_worthy(e):
 
 def fetch(today):
     """All US events from about two weeks back to two weeks ahead, plus notes on which sources worked."""
-    start, end = today - timedelta(days=15), today + timedelta(days=15)
+    start, end = today - timedelta(days=15), today + timedelta(days=22)
     events, notes = [], []
     try:
         events = from_tradingview(start, end)
@@ -192,8 +200,20 @@ def bars(e):
     return {3: "●●●", 2: "●●○", 1: "●○○"}.get(int(e["importance"]), "")
 
 
+def mark_shown(events):
+    """Which events the page and the phone show: high importance, note/bond auctions (one row each), and medium
+    items in the pre-open window when no high-importance release comes out at the same minute (then they are
+    only details of it, or noise). Everything is still stored."""
+    high = {(e["date_mt"], e["time_mt"]) for e in events if int(e["importance"]) >= 3}
+    for e in events:
+        imp = int(e["importance"])
+        e["_show"] = (imp >= 3 or bool(auction_term(e)) or
+                      (imp == 2 and PREOPEN[0] <= e["time_mt"] <= PREOPEN[1] and (e["date_mt"], e["time_mt"]) not in high))
+    return events
+
+
 def shown(e):
-    return int(e["importance"]) >= 2 or "auction" in e["title"].lower()
+    return e.get("_show", int(e["importance"]) >= 3)
 
 
 def week_start(d):
@@ -209,10 +229,11 @@ def paste_line(events, day):
 
 
 def calendar_md(events, today, notes, test=False):
+    mark_shown(events)
     ws = week_start(today)
     lines = ["# %sUS economic calendar (Mountain time)" % ("TEST — " if test else ""), "",
-             "Updated %s MT. ●●● = high importance (alerts 30 and 5 min before), ●●○ medium; low-importance "
-             "items are kept in `calendar/events_YYYY.csv` but not shown. ⏰ = in the pre-open window "
+             "Updated %s MT. ●●● = high importance (alerts 30 and 5 min before); ●●○ medium, shown only in the "
+             "pre-open window; everything else is kept in `calendar/events_YYYY.csv`. ⏰ = in the pre-open window "
              "%s–%s. Bond auctions: results at 11:00." % (datetime.now(MT).strftime("%Y-%m-%d %H:%M"), *PREOPEN), ""]
     for label, start in (("Last week", ws - timedelta(days=7)), ("This week", ws), ("Next week", ws + timedelta(days=7))):
         lines += ["## %s (%s)" % (label, start.strftime("%b %d")), ""]
@@ -232,7 +253,7 @@ def calendar_md(events, today, notes, test=False):
                                                                      e["forecast"], e["previous"]))
             lines.append("")
         if not any_rows:
-            lines += ["No medium- or high-importance US events listed yet.", ""]
+            lines += ["No high-importance US events listed.", ""]
     nxt = today if today.weekday() < 5 else today + timedelta(days=7 - today.weekday())
     lines += ["## Paste line for chart indicators (%s)" % nxt.isoformat(), "", "```", paste_line(events, nxt), "```", "",
               "Sources: " + "; ".join(notes) + ".", ""]
@@ -291,21 +312,27 @@ def sunday(topic, events, today, test=False, path="CALENDAR.md"):
 
 
 def schedule_alerts(topic, events, d, now):
-    sent = []
+    """One reminder per release time (all events at that minute together), 30 and 5 minutes before."""
+    slots = {}
     for e in events:
-        if e["date_mt"] != d.isoformat() or not alert_worthy(e):
-            continue
-        t = datetime.fromisoformat(e["time_utc"].replace("Z", "+00:00"))
+        if e["date_mt"] == d.isoformat() and alert_worthy(e):
+            slots.setdefault(e["time_utc"], []).append(e)
+    sent = []
+    for iso, evs in sorted(slots.items()):
+        t = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        names = ", ".join(e["title"] for e in evs)
+        detail = "\n".join("%s: forecast %s, previous %s" % (e["title"], e["forecast"] or "-", e["previous"] or "-")
+                            for e in evs)
         for mins in (30, 5):
             at = t - timedelta(minutes=mins)
             if at <= now + timedelta(minutes=1):
                 continue
-            extra = " — forecast %s, previous %s" % (e["forecast"] or "-", e["previous"] or "-")
-            ntfy(topic, "%s in %d min (%s MT)" % (e["title"], mins, e["time_mt"]),
-                 "%s at %s Mountain%s.%s" % (e["title"], e["time_mt"], extra,
-                                             " No-trade zone starts now (5 min before)." if mins == 5 else ""),
-                 at=at, priority=4 if mins == 5 else 3)
-            sent.append("%s -%dm" % (e["title"], mins))
+            title = "%s in %d min (%s MT)" % (names if len(names) < 60 else "%s +%d more" % (evs[0]["title"], len(evs) - 1),
+                                              mins, evs[0]["time_mt"])
+            body = detail + ("\nNo-trade zone starts now: 5 minutes before until 5 minutes after." if mins == 5
+                             else "\nTime to plan your exit.")
+            ntfy(topic, title, body, at=at, priority=4 if mins == 5 else 3)
+            sent.append("%s %s -%dm" % (evs[0]["time_mt"], names, mins))
     return sent
 
 
@@ -316,6 +343,7 @@ def refresh(out_dir, today=None, test=False):
     today = today or datetime.now(MT).date()
     base = Path(out_dir) / ("test" if test else "")
     events, notes = fetch(today)
+    mark_shown(events)
     if events:
         store(base / "calendar", events)
         (base / "CALENDAR.md").write_text(calendar_md(events, today, notes, test), encoding="utf-8")
