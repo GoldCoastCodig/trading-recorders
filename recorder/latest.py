@@ -99,10 +99,12 @@ def summary(rows, anchor_rows=None):
             "symbol": s, "contract": contract(r), "source": "tastytrade" if "tastytrade" in (r.get("note") or "") and r["kind"] != "futures-proxy"
             else {"futures": "tastytrade", "futures-proxy": "proxy"}.get(r["kind"], "cboe"), "price": p,
             "daily_move": (f(r.get("daily_upper")) - p) if f(r.get("daily_upper")) is not None else None,
+            "daily_move_iv": f(r.get("daily_em_iv")),
             "daily_low": f(r.get("daily_lower")), "daily_high": f(r.get("daily_upper")),
             "daily_expiry": r.get("daily_expiry", ""),
             "weekly_set": w["date"] if w else "", "weekly_price": f(w["price"]) if w else None,
             "weekly_move": (f(w["weekly_upper"]) - f(w["price"])) if w and f(w.get("weekly_upper")) is not None else None,
+            "weekly_move_iv": f(w.get("weekly_em_iv")) if w else None,
             "weekly_low": f(w.get("weekly_lower")) if w else None, "weekly_high": f(w.get("weekly_upper")) if w else None,
             "weekly_expiry": w.get("weekly_expiry", "") if w else "",
             "late": "LATE" in (r.get("note") or ""), "capture": r.get("capture_time_mt", ""),
@@ -133,13 +135,17 @@ def markdown(s, test=False):
              % (cap, " (**LATE**: futures from the evening session)" if late else "",
                 next((i["weekly_set"] for i in s["items"] if i["weekly_set"]), "—")), "",
              "Micros and nanos use the full-size levels: " + "; ".join("%s = %s" % (m, f_) for f_, m in SMALLER.items()) + ".", "",
-             "| Symbol | Contract | Price | Daily ± | Daily low – high | Weekly ± | Weekly low – high | Source |",
-             "|---|---|---|---|---|---|---|---|"]
+             "Daily ± / Weekly ± = the at-the-money straddle (the levels). IV ± = one standard deviation from the "
+             "at-the-money implied volatility (price x IV x square root of time: 1 trading day for daily, calendar days "
+             "to expiry for weekly), for comparing with the expected move tastytrade and thinkorswim show.", "",
+             "| Symbol | Contract | Price | Daily ± | Daily IV ± | Daily low – high | Weekly ± | Weekly IV ± | Weekly low – high | Source |",
+             "|---|---|---|---|---|---|---|---|---|---|"]
     for it in s["items"]:
         sym = it["symbol"]
-        lines.append("| **%s** | %s | %s | %s | %s – %s | %s | %s – %s | %s |" % (
-            sym, it["contract"], fmt(it["price"], sym), fmt(it["daily_move"], sym), fmt(it["daily_low"], sym),
-            fmt(it["daily_high"], sym), fmt(it["weekly_move"], sym), fmt(it["weekly_low"], sym),
+        lines.append("| **%s** | %s | %s | %s | %s | %s – %s | %s | %s | %s – %s | %s |" % (
+            sym, it["contract"], fmt(it["price"], sym), fmt(it["daily_move"], sym), fmt(it["daily_move_iv"], sym),
+            fmt(it["daily_low"], sym), fmt(it["daily_high"], sym), fmt(it["weekly_move"], sym),
+            fmt(it["weekly_move_iv"], sym), fmt(it["weekly_low"], sym),
             fmt(it["weekly_high"], sym), it["source"]))
     lines += ["", "## Paste line for chart indicators", "", "```", paste_line(s), "```", "",
               "Full history: `expected-move/em_YYYY.csv`. How the numbers are made: recorder/README.md on main.", ""]
@@ -150,7 +156,8 @@ def write_files(out_dir, s, test=False):
     out_dir = Path(out_dir)
     (out_dir / "LATEST.md").write_text(markdown(s, test), encoding="utf-8")
     cols = ["symbol", "contract", "source", "price", "daily_move", "daily_low", "daily_high", "daily_expiry",
-            "weekly_set", "weekly_price", "weekly_move", "weekly_low", "weekly_high", "weekly_expiry", "late", "capture"]
+            "weekly_set", "weekly_price", "weekly_move", "weekly_low", "weekly_high", "weekly_expiry", "late", "capture",
+            "daily_move_iv", "weekly_move_iv"]   # new columns at the end so existing readers keep working
     with open(out_dir / "latest.csv", "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=cols)
         w.writeheader()

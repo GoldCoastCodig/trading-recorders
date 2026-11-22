@@ -14,3 +14,9 @@ Sources: Cboe delayed quotes (tastytrade as backup), tastytrade's read-only API,
 calendar, U.S. Treasury auction data, Yahoo chart data. Credentials are GitHub secrets of this repository.
 
 Not trading advice. Provided as is, for the owner's own records.
+
+## Cboe pause
+Cboe refuses automated requests since 2026-11-21. When it fails for the first 3 symbols, the recorder writes
+`cboe-status.txt` (`refused DATE`) to the data branch and stops asking Cboe; every 7 days it sends one test
+request and goes back to Cboe if that works. Backups meanwhile: tastytrade, then Schwab for volatility indexes.
+LATEST.md also shows "IV ±" columns: the one-standard-deviation move from at-the-money implied volatility.

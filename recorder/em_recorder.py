@@ -61,12 +61,12 @@ EM_COLUMNS = [
 VOL_COLUMNS = ["date", "capture_time_mt", "source_time", "index", "value", "prev_close"]
 
 
-def fetch_json(url, tries=3):
+def fetch_json(url, tries=3, timeout=30):
     last = None
     for i in range(tries):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json"})
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.loads(r.read().decode("utf-8"))
         except Exception as e:  # network hiccup or blocked: retry, then give up
             last = e
@@ -169,6 +169,41 @@ def em_block(opts, expiry, price, today, prefix):
 
 def weekdays_between(a, b):
     return sum(1 for i in range(1, (b - a).days + 1) if (a + timedelta(days=i)).weekday() < 5)
+
+
+CBOE_PAUSE_DAYS = 7   # after Cboe refuses, skip it and try one request a week (user, 2026-11-22)
+
+
+def cboe_allowed(data_dir, today, write=True):
+    """True when Cboe may be asked today. State in <data>/cboe-status.txt ("ok DATE" or "refused DATE";
+    DATE = last check). While refused, one test request (SPY) every CBOE_PAUSE_DAYS days."""
+    f = Path(data_dir) / "cboe-status.txt"
+    state, last = "ok", None
+    try:
+        state, d = f.read_text(encoding="utf-8").split()[:2]
+        last = date.fromisoformat(d)
+    except Exception:
+        pass
+    if state == "refused" and last and (today - last).days < CBOE_PAUSE_DAYS:
+        print(f"Cboe paused (refused on {last}; next test request from {last + timedelta(days=CBOE_PAUSE_DAYS)})")
+        return False
+    if state != "refused":
+        return True
+    try:
+        fetch_json("https://cdn.cboe.com/api/global/delayed_quotes/options/SPY.json", tries=1)
+        ok = True
+    except Exception as e:
+        print(f"Cboe weekly test request still refused: {e}", file=sys.stderr)
+        ok = False
+    print("Cboe weekly test request: " + ("works again, using Cboe" if ok else "refused, paused another week"))
+    if write:
+        f.write_text(f"{'ok' if ok else 'refused'} {today.isoformat()}\n", encoding="utf-8")
+    return ok
+
+
+def cboe_mark_refused(data_dir, today, write=True):
+    if write:
+        (Path(data_dir) / "cboe-status.txt").write_text(f"refused {today.isoformat()}\n", encoding="utf-8")
 
 
 def record_symbol(sym, kind, cboe, today, raw_dir):
@@ -335,10 +370,22 @@ def main():
         return tastytrade_em.record_equity(tt_backup[0], sym, kind, today, datetime.now(timezone.utc), raw_dir,
                                            pick_expiries, weekdays_between)
 
+    use_cboe = cboe_allowed(a.out, today, write=not a.test)
+    cboe_refusals = 0
     for sym, (kind, cboe) in OPTION_SYMBOLS.items():
         try:
+            if not use_cboe:
+                raise RuntimeError("paused after refusals")
             row, _ = record_symbol(sym, kind, cboe, today, raw_dir)
+            cboe_refusals = -999   # Cboe answered at least once: no pause
         except Exception as e:
+            if use_cboe:
+                cboe_refusals += 1
+                if cboe_refusals >= 3:   # the first 3 symbols all failed at Cboe (refused or hanging): stop asking
+                    use_cboe = False
+                    cboe_mark_refused(a.out, today, write=not a.test)
+                    print(f"Cboe failed for the first {cboe_refusals} symbols ({str(e)[-60:]}); "
+                          f"paused for {CBOE_PAUSE_DAYS} days", file=sys.stderr)
             try:
                 row = from_tastytrade(sym, kind)
                 row["note"] = "Cboe refused (%s); %s" % (str(e)[-40:], row.get("note", ""))
@@ -378,7 +425,7 @@ def main():
         print("tastytrade secrets not set; futures use proxies only")
 
     vols = []
-    for ix in VOL_INDICES:
+    for ix in (VOL_INDICES if use_cboe else []):
         try:
             j = fetch_json(f"https://cdn.cboe.com/api/global/delayed_quotes/quotes/_{ix}.json")
             d = j.get("data", j)
@@ -429,7 +476,7 @@ def main():
             print("Calendar: " + "; ".join(econ_calendar.refresh(Path(a.out), today)[1]))
         except Exception as e:
             print(f"Calendar FAILED: {e}", file=sys.stderr)
-    if today.weekday() == 4 and not a.test:  # Fridays: refresh the volatility-index history
+    if today.weekday() == 4 and not a.test and use_cboe:  # Fridays: refresh the volatility-index history
         try:
             import vol_history
             for line in vol_history.refresh(Path(a.out)):
