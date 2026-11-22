@@ -9,7 +9,8 @@ on:
     - cron: "27,37,47,57 21 * * 1-5"  # expected move backups, 15:27-15:57 MDT
     - cron: "27,37,47,57 22 * * 1-5"  # expected move backups, 15:27-15:57 MST
     - cron: "13 0 * * 2-6"            # last expected-move backup
-    - cron: "41 10,11 * * 0-5"        # economic calendar backup, 04:41 Mountain
+    - cron: "41 10,11 * * 1-5"        # economic calendar backup, weekdays 04:41 Mountain
+    - cron: "51 21 * * 0"             # economic calendar backup, Sundays 14:51 MST / 15:51 MDT (week ahead)
   workflow_dispatch:
     inputs:
       mode:
@@ -51,7 +52,7 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
         run: |
           MODE="${{ github.event.inputs.mode || 'normal' }}"
-          [ "${{ github.event.schedule }}" = "41 10,11 * * 0-5" ] && MODE="calendar"
+          case "${{ github.event.schedule }}" in "41 10,11 * * 1-5"|"51 21 * * 0") MODE="calendar";; esac
           if [ "$MODE" = "calendar" ]; then python3 recorder/econ_calendar.py --out data --notify; exit 0; fi
           if [ "$MODE" = "calendar-test" ]; then python3 recorder/econ_calendar.py --out data --test; exit 0; fi
           FLAG=""

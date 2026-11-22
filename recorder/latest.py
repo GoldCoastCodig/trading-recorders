@@ -96,8 +96,8 @@ def summary(rows, anchor_rows=None):
         p = f(r["price"])
         w = weekly_anchor(anchor_rows, s, day)
         out.append({
-            "symbol": s, "contract": contract(r), "source": {"futures": "tastytrade", "futures-proxy": "proxy"}.get(
-                r["kind"], "cboe"), "price": p,
+            "symbol": s, "contract": contract(r), "source": "tastytrade" if "tastytrade" in (r.get("note") or "") and r["kind"] != "futures-proxy"
+            else {"futures": "tastytrade", "futures-proxy": "proxy"}.get(r["kind"], "cboe"), "price": p,
             "daily_move": (f(r.get("daily_upper")) - p) if f(r.get("daily_upper")) is not None else None,
             "daily_low": f(r.get("daily_lower")), "daily_high": f(r.get("daily_upper")),
             "daily_expiry": r.get("daily_expiry", ""),

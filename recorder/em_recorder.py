@@ -322,17 +322,35 @@ def main():
     stamp = {"date": today.isoformat(), "capture_time_mt": now.strftime("%Y-%m-%d %H:%M")}
     raw_dir = out / "raw" / str(today.year) / today.isoformat()
     rows, by_sym, failures = [], {}, []
+    tt_backup = []   # tastytrade login, made only if Cboe refuses something
+
+    def from_tastytrade(sym, kind):
+        """Backup when Cboe refuses: the same expected move from tastytrade's option chain."""
+        if not os.environ.get("TT_REFRESH_TOKEN"):
+            raise RuntimeError("no tastytrade secrets for the backup")
+        import tastytrade_em
+        from datetime import timezone
+        if not tt_backup:
+            tt_backup.append(tastytrade_em.TastyTrade())
+        return tastytrade_em.record_equity(tt_backup[0], sym, kind, today, datetime.now(timezone.utc), raw_dir,
+                                           pick_expiries, weekdays_between)
+
     for sym, (kind, cboe) in OPTION_SYMBOLS.items():
         try:
             row, _ = record_symbol(sym, kind, cboe, today, raw_dir)
-            by_sym[sym] = row
-            rows.append({**stamp, **row})
-            print(f"{sym:6} price={row.get('price')} daily={row.get('daily_straddle')} "
-                  f"weekly={row.get('weekly_straddle')} {row.get('note', '')}")
         except Exception as e:
-            failures.append(sym)
-            rows.append({**stamp, "symbol": sym, "kind": kind, "note": f"FAILED: {e}"})
-            print(f"{sym:6} FAILED: {e}", file=sys.stderr)
+            try:
+                row = from_tastytrade(sym, kind)
+                row["note"] = "Cboe refused (%s); %s" % (str(e)[-40:], row.get("note", ""))
+            except Exception as e2:
+                failures.append(sym)
+                rows.append({**stamp, "symbol": sym, "kind": kind, "note": f"FAILED: Cboe {e}; tastytrade {e2}"})
+                print(f"{sym:6} FAILED: Cboe {e}; tastytrade {e2}", file=sys.stderr)
+                continue
+        by_sym[sym] = row
+        rows.append({**stamp, **row})
+        print(f"{sym:6} price={row.get('price')} daily={row.get('daily_straddle')} "
+              f"weekly={row.get('weekly_straddle')} {row.get('note', '')}")
 
     for fut, (base_sym, _) in FUTURES_PROXIES.items():
         base = by_sym.get(base_sym)
@@ -368,7 +386,18 @@ def main():
                          "value": num(d.get("current_price")) or num(d.get("close")),
                          "prev_close": num(d.get("prev_day_close"))})
         except Exception as e:
-            print(f"{ix} FAILED: {e}", file=sys.stderr)
+            print(f"{ix} FAILED at Cboe: {e}", file=sys.stderr)
+    missing = [ix for ix in VOL_INDICES if ix not in {v["index"] for v in vols}]
+    if missing and os.environ.get("TT_REFRESH_TOKEN"):   # backup: the same index values from tastytrade
+        try:
+            import tastytrade_em
+            if not tt_backup:
+                tt_backup.append(tastytrade_em.TastyTrade())
+            for ix, (val, prev) in tastytrade_em.index_values(tt_backup[0], missing).items():
+                vols.append({**stamp, "source_time": "tastytrade", "index": ix, "value": val, "prev_close": prev})
+            print("vol indices from tastytrade: " + ", ".join(sorted(set(missing) & {v["index"] for v in vols})))
+        except Exception as e:
+            print(f"vol indices tastytrade backup FAILED: {e}", file=sys.stderr)
 
     if now.hour >= 16:  # CME reopened at 16:00 MT: futures quotes are from the evening session
         for r in rows:

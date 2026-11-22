@@ -52,6 +52,22 @@ class TastyTrade:
     def chain(self, product):
         return self._call("GET", f"/futures-option-chains/{product}/nested")["data"]
 
+    def equity_chain(self, symbol):
+        """Stock / ETF / index option chain (nested: one item per root, e.g. SPX and SPXW)."""
+        return self._call("GET", "/option-chains/%s/nested" % urllib.parse.quote(symbol, safe=""))["data"]
+
+    def market_data(self, pairs):
+        """Quotes for [(type, symbol)], type = equity | index | equity-option | future | future-option."""
+        out, pairs = {}, list(pairs)
+        while pairs:                                    # at most 100 symbols per request
+            chunk, pairs = pairs[:100], pairs[100:]
+            params = {}
+            for kind, sym in chunk:
+                params.setdefault(kind, []).append(sym)
+            for it in self._call("GET", "/market-data/by-type", params)["data"].get("items", []):
+                out[it.get("symbol")] = it
+        return out
+
     def quotes(self, futures=(), options=()):
         out = {}
         futures, options = list(futures), list(options)
@@ -241,3 +257,87 @@ def record(today, now_utc, raw_dir, pick_expiries, weekdays_between):
             row["note"] = f"FAILED tastytrade: {e}"
         rows.append(row)
     return rows
+
+
+# ---------------------------------------------------------------- backup for Cboe (stocks, ETFs, indexes)
+
+PM_ROOTS = {"SPX": "SPXW", "NDX": "NDXP", "RUT": "RUTW"}
+
+
+def spot(q):
+    """Underlying price: mid of bid/ask, else last / mark / close (indexes have no bid/ask)."""
+    if not q:
+        return None
+    return mid(q) or num(q.get("last")) or num(q.get("mark")) or num(q.get("close"))
+
+
+def em_equity_block(tt, e, price, today, now, prefix, weekdays_between):
+    row = {f"{prefix}_expiry": e["expiration-date"], f"{prefix}_days": (exp_date(e) - today).days}
+    strikes = sorted(e.get("strikes", []), key=lambda s: abs(num(s["strike-price"]) - price))[:4]
+    q = tt.market_data([("equity-option", s[c]) for s in strikes for c in ("call", "put") if s.get(c)])
+    best = None
+    for s in strikes:
+        c, p = mid(q.get(s.get("call"))), mid(q.get(s.get("put")))
+        if c is not None and p is not None:
+            best = (num(s["strike-price"]), c + p)
+            break
+    if not best:
+        return row, q, "%s: no two-sided ATM quotes" % prefix
+    k, straddle = best
+    iv = implied_vol(price, k, years_to(e, now), straddle)
+    row[f"{prefix}_atm_strike"] = k
+    row[f"{prefix}_straddle"] = round(straddle, 6)
+    if iv:
+        row[f"{prefix}_iv"] = round(iv, 5)
+        t = 1 / 252 if prefix == "daily" else row[f"{prefix}_days"] / 365
+        row[f"{prefix}_em_iv"] = round(price * iv * math.sqrt(t), 6)
+    move, basis = straddle, "straddle"
+    if prefix == "daily" and weekdays_between(today, exp_date(e)) > 1 and row.get("daily_em_iv"):
+        move, basis = row["daily_em_iv"], "iv-1day"
+    row[f"{prefix}_basis"] = basis
+    row[f"{prefix}_upper"] = round(price + move, 6)
+    row[f"{prefix}_lower"] = round(price - move, 6)
+    return row, q, None
+
+
+def record_equity(tt, sym, kind, today, now_utc, raw_dir, pick_expiries, weekdays_between):
+    """Expected move for a stock / ETF / index from tastytrade, same method as the Cboe path."""
+    data = tt.equity_chain(sym)
+    items = data.get("items") or [data]
+    exps = []
+    for it in items:
+        for e in it.get("expirations", []):
+            if e.get("strikes") and exp_date(e) > today:
+                exps.append({**e, "_root": it.get("root-symbol", "")})
+    if kind == "index" and any(e["_root"] == PM_ROOTS.get(sym) for e in exps):   # PM-settled weeklies
+        exps = [e for e in exps if e["_root"] == PM_ROOTS.get(sym)]
+    uq = tt.market_data([("index" if kind == "index" else "equity", sym)]).get(sym)
+    price = spot(uq)
+    row = {"symbol": sym, "kind": kind, "source_time": now_utc.strftime("%Y-%m-%d %H:%M:%S UTC"),
+           "price": round(price, 6) if price else None,
+           "prev_close": num((uq or {}).get("prev-close")) or num((uq or {}).get("close"))}
+    if not price or not exps:
+        raise RuntimeError("tastytrade: no price or no expirations for %s" % sym)
+    daily_d, weekly_d = pick_expiries([exp_date(e) for e in exps], today)
+    snaps, notes = {"underlying": uq}, []
+    for prefix, d in (("daily", daily_d), ("weekly", weekly_d)):
+        if d is None:
+            continue
+        e = sorted((x for x in exps if exp_date(x) == d), key=lambda x: (x.get("settlement-type") != "PM", x["_root"]))[0]
+        part, q, note = em_equity_block(tt, e, price, today, now_utc, prefix, weekdays_between)
+        row.update(part)
+        snaps[prefix] = {"expiration": {k: v for k, v in e.items() if k != "strikes"}, "option_quotes": q}
+        if note:
+            notes.append(note)
+    row["note"] = "tastytrade options" + ("; " + "; ".join(notes) if notes else "")
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    with gzip.open(raw_dir / ("tt_%s.json.gz" % sym), "wt", encoding="utf-8") as f:
+        json.dump(snaps, f, default=str)
+    return row
+
+
+def index_values(tt, names):
+    """{name: (value, prev_close)} for volatility indexes (VIX family) from tastytrade."""
+    q = tt.market_data([("index", n) for n in names])
+    return {n: (spot(q.get(n)), num((q.get(n) or {}).get("prev-close")) or num((q.get(n) or {}).get("close")))
+            for n in names if q.get(n)}
