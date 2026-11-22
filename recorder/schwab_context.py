@@ -119,3 +119,24 @@ def record(out_dir):
         mc.write_daily(out / "daily" / f"context_{year}.csv", rows)
     report.append(f"schwab: {len(by_day)} days of minute bars written")
     return report
+
+
+QUOTES_URL = "https://api.schwabapi.com/marketdata/v1/quotes"
+
+
+def index_values(names, token=None):
+    """{name: (value, prev_close)} for volatility indexes (VIX, VXN, GVZ, ...) as Schwab quotes them ($VIX ...).
+    Second backup for the expected-move recorder while Cboe refuses; names Schwab does not know are skipped."""
+    token = token or access_token()
+    q = urllib.parse.urlencode({"symbols": ",".join("$" + n for n in names), "fields": "quote"})
+    req = urllib.request.Request(QUOTES_URL + "?" + q, headers={"Authorization": "Bearer " + token,
+                                                                 "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        data = json.loads(r.read().decode())
+    out = {}
+    for n in names:
+        quote = (data.get("$" + n) or {}).get("quote") or {}
+        val = quote.get("lastPrice") or quote.get("closePrice")
+        if val:
+            out[n] = (float(val), float(quote["closePrice"]) if quote.get("closePrice") else None)
+    return out

@@ -398,6 +398,16 @@ def main():
             print("vol indices from tastytrade: " + ", ".join(sorted(set(missing) & {v["index"] for v in vols})))
         except Exception as e:
             print(f"vol indices tastytrade backup FAILED: {e}", file=sys.stderr)
+    missing = [ix for ix in VOL_INDICES if ix not in {v["index"] for v in vols}]
+    if missing and os.environ.get("SCHWAB_REFRESH_TOKEN"):   # second backup: Schwab quotes ($VXN, $GVZ, ...)
+        try:
+            import schwab_context
+            for ix, (val, prev) in schwab_context.index_values(missing).items():
+                vols.append({**stamp, "source_time": "schwab", "index": ix, "value": val, "prev_close": prev})
+            got = sorted(set(missing) & {v["index"] for v in vols})
+            print("vol indices from Schwab: " + (", ".join(got) or "none of " + ", ".join(missing)))
+        except Exception as e:
+            print(f"vol indices Schwab backup FAILED: {e}", file=sys.stderr)
 
     if now.hour >= 16:  # CME reopened at 16:00 MT: futures quotes are from the evening session
         for r in rows:
