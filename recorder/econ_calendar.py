@@ -9,10 +9,13 @@ Sources (free, no login), tried in this order:
 
 Writes (market-data branch):  calendar/events_YYYY.csv  every event seen, updated when actuals arrive
                                CALENDAR.md               last week + this week + next week, Mountain time
-Phone (ntfy, same topic as the expected move):
+Phone (ntfy): topic NTFY_TOPIC_CALENDAR (the "news calendar" feed, since 2026-11-25); when that is not set,
+NTFY_TOPIC (the expected-move feed) as before. Results after each release go to the news feed (news_watch.py).
   - morning (mode calendar, ~04:45 MT Mon-Fri): today's events; Sunday: the week ahead
   - 30 and 5 minutes before each high-importance event and each 10/20/30-year auction (scheduled in the
     morning with ntfy's delayed delivery, so they arrive on time even when GitHub is late)
+Fed / FOMC speakers (and testimony, press conferences): Forex Factory's weekly feed, added to the list even
+when TradingView works (TradingView's US calendar does not list speeches); always shown.
 Importance: 3 = high (TradingView's three blue bars), 2 = medium, 1 = low.
 """
 
@@ -53,6 +56,7 @@ def num_text(v):
 # Raised to high: shown as high by the user's old calendar widget, or always market-moving (FOMC, Fed chair).
 BOOST = re.compile(r"^Initial Jobless Claims$|^ADP Employment Change$|S&P Global Composite PMI|"
                    r"Fed Interest Rate Decision|FOMC|Fed Chair", re.I)
+SPEAKER = re.compile(r"\bspeaks\b|\bspeech\b|testif|press conference|\bremarks\b", re.I)
 SUBROW = re.compile(r"allotted|bid-to-cover|total accepted|high yield|tail", re.I)
 
 
@@ -84,7 +88,8 @@ def from_tradingview(start, end):
     return out
 
 
-def from_forexfactory():
+def from_forexfactory(only=None):
+    """only: a regex; keep just the titles it matches (used to add the Fed speakers next to TradingView)."""
     out = []
     for week in ("thisweek", "nextweek"):
         try:
@@ -95,6 +100,8 @@ def from_forexfactory():
             continue
         for e in rows:
             if e.get("country") != "USD" or e.get("impact") == "Holiday":
+                continue
+            if only is not None and not only.search(e.get("title", "")):
                 continue
             t = datetime.fromisoformat(e["date"])
             imp = {"High": 3, "Medium": 2, "Low": 1}.get(e.get("impact"), 1)
@@ -135,6 +142,15 @@ def is_key_auction(e):
     return auction_term(e) in ("10", "20", "30")
 
 
+def is_speaker(e):
+    return bool(SPEAKER.search(e["title"]))
+
+
+def calendar_topic():
+    """The news-calendar feed; the expected-move topic when its own secret is not set yet."""
+    return (os.environ.get("NTFY_TOPIC_CALENDAR") or os.environ.get("NTFY_TOPIC") or "").strip()
+
+
 def alert_worthy(e):
     return int(e["importance"]) >= 3 or is_key_auction(e)
 
@@ -153,6 +169,15 @@ def fetch(today):
             notes.append("Forex Factory: %d events" % len(events))
         except Exception as e2:
             notes.append("Forex Factory FAILED (%s)" % e2)
+    if not any(e["source"] == "forexfactory" for e in events):
+        try:
+            spk = from_forexfactory(SPEAKER)
+            listed = {(e["date_mt"], e["time_mt"]) for e in events if SPEAKER.search(e["title"])}
+            spk = [e for e in spk if (e["date_mt"], e["time_mt"]) not in listed]
+            events += spk
+            notes.append("Forex Factory: %d Fed/FOMC speakers" % len(spk))
+        except Exception as e:
+            notes.append("Forex Factory speakers FAILED (%s)" % e)
     try:
         auctions = from_treasury(start, end)
         listed = {(e["date_mt"], auction_term(e)) for e in events if auction_term(e)}
@@ -207,7 +232,7 @@ def mark_shown(events):
     high = {(e["date_mt"], e["time_mt"]) for e in events if int(e["importance"]) >= 3}
     for e in events:
         imp = int(e["importance"])
-        e["_show"] = (imp >= 3 or bool(auction_term(e)) or
+        e["_show"] = (imp >= 3 or bool(auction_term(e)) or is_speaker(e) or
                       (imp == 2 and PREOPEN[0] <= e["time_mt"] <= PREOPEN[1] and (e["date_mt"], e["time_mt"]) not in high))
     return events
 
@@ -281,7 +306,7 @@ def day_text(events, d, only_alerts=False):
     evs = [e for e in events if e["date_mt"] == d.isoformat() and (alert_worthy(e) if only_alerts else shown(e))]
     out = []
     for e in evs:
-        mark = "‼ " if alert_worthy(e) else ""
+        mark = "‼ " if alert_worthy(e) else ("🎤 " if is_speaker(e) else "")
         extra = " (f %s, p %s)" % (e["forecast"] or "-", e["previous"] or "-") if (e["forecast"] or e["previous"]) else ""
         out.append("%s %s%s%s%s" % (e["time_mt"], mark, e["title"], extra,
                                     " ⏰" if PREOPEN[0] <= e["time_mt"] <= PREOPEN[1] else ""))
@@ -356,7 +381,7 @@ def main():
     ap.add_argument("--notify", action="store_true", help="send the morning/Sunday message and schedule reminders")
     ap.add_argument("--test", action="store_true", help="write under test/, TEST messages, one demo reminder in 2 min")
     a = ap.parse_args()
-    topic = os.environ.get("NTFY_TOPIC", "").strip()
+    topic = calendar_topic()
     now_utc = datetime.now(timezone.utc)
     now = now_utc.astimezone(MT)
     today = now.date()

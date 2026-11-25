@@ -1,4 +1,6 @@
 # Daily recorders: expected move (15:30 Mountain), market context, economic calendar (04:45 Mountain).
+# Phone feeds (ntfy topics, all GitHub secrets): NTFY_TOPIC expected move, NTFY_TOPIC_CALENDAR news calendar,
+# NTFY_TOPIC_STATUS failures; an unset feed falls back to NTFY_TOPIC. News results: news.yml.
 # Started on time by cron-job.org ("run workflow"); the schedules below are only free backups.
 # The collected data is NOT stored here: it is pushed to the owner's private repository with the DATA_TOKEN secret.
 # Security: no pull-request triggers; secrets are only given to runs started by the owner; read-only token here.
@@ -14,10 +16,10 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "normal = expected move (records once per day from 15:25 MT); test; force; history; context; context-test; calendar; calendar-test"
+        description: "normal = expected move (records once per day from 15:25 MT); test; force; history; context; context-test; calendar; calendar-test; news-test = one TEST message per news source (news.yml does the real runs)"
         default: test
         type: choice
-        options: [test, force, normal, history, context, context-test, calendar, calendar-test]
+        options: [test, force, normal, history, context, context-test, calendar, calendar-test, news-test]
 
 permissions:
   contents: read
@@ -50,11 +52,14 @@ jobs:
           SCHWAB_APP_SECRET: ${{ secrets.SCHWAB_APP_SECRET }}
           SCHWAB_REFRESH_TOKEN: ${{ secrets.SCHWAB_REFRESH_TOKEN }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NTFY_TOPIC_CALENDAR: ${{ secrets.NTFY_TOPIC_CALENDAR }}
+          NTFY_TOPIC_STATUS: ${{ secrets.NTFY_TOPIC_STATUS }}
         run: |
           MODE="${{ github.event.inputs.mode || 'normal' }}"
           case "${{ github.event.schedule }}" in "41 10,11 * * 1-5"|"51 21 * * 0") MODE="calendar";; esac
           if [ "$MODE" = "calendar" ]; then python3 recorder/econ_calendar.py --out data --notify; exit 0; fi
           if [ "$MODE" = "calendar-test" ]; then python3 recorder/econ_calendar.py --out data --test; exit 0; fi
+          if [ "$MODE" = "news-test" ]; then NTFY_TOPIC_NEWS="${{ secrets.NTFY_TOPIC_NEWS }}" python3 recorder/news_watch.py --out data --test; exit 0; fi
           FLAG=""
           [ "$MODE" = "test" ] && FLAG="--test"
           [ "$MODE" = "force" ] && FLAG="--force"
@@ -72,3 +77,13 @@ jobs:
           git commit -q -m "Record $(TZ=America/Denver date +%F) (${{ github.event.inputs.mode || 'scheduled' }}, public runner)"
           for i in 1 2 3; do git push -q origin HEAD:market-data && exit 0; sleep 5; git pull -q --rebase origin market-data; done
           exit 1
+      - name: Tell the status feed when this run failed
+        if: failure()
+        env:
+          NTFY_TOPIC_STATUS: ${{ secrets.NTFY_TOPIC_STATUS }}
+        run: |
+          [ -z "$NTFY_TOPIC_STATUS" ] && exit 0
+          curl -sS --retry 3 -H "Title: Recorder run FAILED (${{ github.event.inputs.mode || 'scheduled' }})" -H "Tags: warning" \
+            -H "Click: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            -d "The Record run failed; tap to see the log. A later run or the PC backup may still record it." \
+            "https://ntfy.sh/${NTFY_TOPIC_STATUS}"

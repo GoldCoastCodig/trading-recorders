@@ -1,0 +1,59 @@
+# News that has happened -> phone (recorder/news_watch.py): results of scheduled US releases (actual vs forecast),
+# Fed/FOMC speakers starting, Fed speeches and statements, Trump posts with a market word, White House actions,
+# breaking market headlines. Started every 5 minutes by cron-job.org; the schedule below is only a free backup.
+# Each run takes well under a minute. Data (what was sent) goes to the private repository (DATA_TOKEN).
+# Security: no pull-request triggers; secrets are only given to runs started by the owner; read-only token here.
+name: News
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "normal = send what is new; test = newest item of every source as a TEST message (writes test/news)"
+        default: test
+        type: choice
+        options: [test, normal]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: news
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    if: github.repository_owner == 'GoldCoastCodig'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2, pinned
+        with:
+          persist-credentials: false
+      - name: Get the data branch (private repository)
+        env:
+          DATA_TOKEN: ${{ secrets.DATA_TOKEN }}
+        run: |
+          git clone --quiet --depth 1 --branch market-data \
+            "https://x-access-token:${DATA_TOKEN}@github.com/GoldCoastCodig/Trading-Research.git" data
+      - name: Check the news
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NTFY_TOPIC_NEWS: ${{ secrets.NTFY_TOPIC_NEWS }}
+          NEWS_TRUMP_ALL: ${{ vars.NEWS_TRUMP_ALL }}
+        run: |
+          FLAG=""
+          [ "${{ github.event.inputs.mode }}" = "test" ] && FLAG="--test"
+          python3 recorder/news_watch.py --out data $FLAG
+      - name: Save to the private data branch
+        run: |
+          cd data
+          git config user.name "recorder"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then echo "Nothing new."; exit 0; fi
+          git commit -q -m "News $(TZ=America/Denver date '+%F %H:%M') (${{ github.event.inputs.mode || 'scheduled' }}, public runner)"
+          for i in 1 2 3 4; do git push -q origin HEAD:market-data && exit 0; sleep 5; git pull -q --rebase origin market-data; done
+          exit 1
