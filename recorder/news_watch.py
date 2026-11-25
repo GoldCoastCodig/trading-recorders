@@ -315,7 +315,10 @@ def main():
                 fresh.append(i)
         for i in fresh[:MAX_PER_FEED]:
             when = i["time"].astimezone(MT).strftime("%H:%M MT") if i["time"] else ""
-            title = "%s%s: %s" % ("TEST " if a.test else "", label, i["title"] or i["text"][:80])
+            head = i["title"]
+            if not head or re.match(r"(?i)^post from ", head):     # trumpstruth titles are "Post from <date>"
+                head = i["text"][:90] + ("..." if len(i["text"]) > 90 else "")
+            title = "%s%s: %s" % ("TEST " if a.test else "", label, head)
             body = (i["text"] if i["text"] and i["text"] != i["title"] else "") + ("\n" + when if when else "")
             out.append((name, title, body.strip() or label, prio, i["link"] or None, "newspaper"))
         if len(fresh) > MAX_PER_FEED:
