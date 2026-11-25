@@ -306,7 +306,8 @@ def record_context(out, today, history=False):
             lines += schwab_context.record(out)
         except Exception as e:
             lines.append(f"schwab FAILED: {e}")
-            topic = os.environ.get("NTFY_TOPIC", "").strip()
+            # status feed (NTFY_TOPIC_STATUS, since 2026-11-25), else the expected-move topic
+            topic = (os.environ.get("NTFY_TOPIC_STATUS") or os.environ.get("NTFY_TOPIC") or "").strip()
             if topic and "expired" in str(e):   # the 7-day Schwab login ran out: tell the phone
                 try:
                     urllib.request.urlopen(urllib.request.Request(
