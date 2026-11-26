@@ -35,7 +35,7 @@ UA = "Mozilla/5.0 (personal research recorder)"
 OPTION_SYMBOLS = {
     "AAPL": ("stock", "AAPL"), "SPCX": ("stock", "SPCX"), "TSLA": ("stock", "TSLA"),
     "MSFT": ("stock", "MSFT"), "AMZN": ("stock", "AMZN"), "NFLX": ("stock", "NFLX"),
-    "GOOGL": ("stock", "GOOGL"), "META": ("stock", "META"),
+    "GOOGL": ("stock", "GOOGL"), "META": ("stock", "META"), "ANT": ("stock", "ANT"),
     "SPX": ("index", "_SPX"), "NDX": ("index", "_NDX"), "RUT": ("index", "_RUT"),
     "SPY": ("etf", "SPY"), "QQQ": ("etf", "QQQ"), "IWM": ("etf", "IWM"),
     "GLD": ("etf", "GLD"), "USO": ("etf", "USO"), "FXE": ("etf", "FXE"),

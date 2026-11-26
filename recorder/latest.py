@@ -21,7 +21,7 @@ FUTURES = ["ES", "NQ", "RTY", "CL", "GC", "6E"]
 # Micros and E-nanos (no options of their own here) use the full-size contract's levels in points.
 SMALLER = {"ES": "MES, NES", "NQ": "MNQ, NNQ", "RTY": "M2K, N2K", "CL": "MCL", "GC": "MGC", "6E": "M6E"}
 OTHERS = ["SPX", "NDX", "RUT", "SPY", "QQQ", "IWM", "AAPL", "SPCX", "TSLA", "MSFT", "AMZN", "NFLX",
-          "GOOGL", "META", "GLD", "USO", "FXE"]
+          "GOOGL", "META", "ANT", "GLD", "USO", "FXE"]
 REPO_URL = "https://github.com/GoldCoastCodig/Trading-Research/blob/market-data/"
 
 
@@ -169,7 +169,7 @@ def notification_text(s):
     lines = []
     for it in s["items"]:
         sym = it["symbol"]
-        if sym not in FUTURES and sym not in ("SPX", "NDX", "AAPL", "SPCX", "TSLA", "MSFT", "AMZN", "NFLX", "GOOGL", "META"):
+        if sym not in FUTURES and sym not in ("SPX", "NDX", "AAPL", "SPCX", "TSLA", "MSFT", "AMZN", "NFLX", "GOOGL", "META", "ANT"):
             continue
         d = "±%s  %s–%s" % (fmt(it["daily_move"], sym), fmt(it["daily_low"], sym), fmt(it["daily_high"], sym))
         w = ("  W %s–%s" % (fmt(it["weekly_low"], sym), fmt(it["weekly_high"], sym))) if it["weekly_high"] else ""
